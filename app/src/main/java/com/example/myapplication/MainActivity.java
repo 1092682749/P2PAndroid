@@ -17,12 +17,23 @@ import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.alibaba.fastjson.JSON;
+
 import org.w3c.dom.Text;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.DatagramSocketImpl;
+import java.net.DatagramSocketImplFactory;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketException;
+import java.net.UnknownHostException;
+import java.util.Timer;
 
 public class MainActivity extends AppCompatActivity
         implements NavigationView.OnNavigationItemSelectedListener {
@@ -33,6 +44,19 @@ public class MainActivity extends AppCompatActivity
     TextView textView = null;
     OutputStream os = null;
     InputStream is = null;
+    DatagramSocket datagramSocket = null;
+    Button clientA = null;
+    Button myP2PConnect = null;
+    DatagramSocket connectDataSocket = null;
+    volatile boolean isRead = false;
+    PeerInfo destinationInfo = null;
+    InetSocketAddress destinationAddress = null;
+    DatagramSocket destionationSocket = null;
+    Button desbtn = null;
+    InetSocketAddress serverAddress = null;
+    public MainActivity() throws SocketException {
+        // datagramSocket.setReuseAddress(true);
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -127,7 +151,10 @@ public class MainActivity extends AppCompatActivity
         ipBtn = findViewById(R.id.ip_btn);
         connBtn = findViewById(R.id.conn_btn);
         Button needBtn = findViewById(R.id.need_btn);
+        clientA = findViewById(R.id.ClientA);
+        myP2PConnect = findViewById(R.id.connection);
         textView = findViewById(R.id.user);
+        desbtn = findViewById(R.id.destination);
         if (ipBtn == null || connBtn == null) {
             ipBtn.setOnClickListener(new View.OnClickListener() {
                 @Override
@@ -144,11 +171,15 @@ public class MainActivity extends AppCompatActivity
                         @Override
                         public void run() {
                             try {
-                                socket = new Socket("10.0.2.2", 7777);
+                                if (datagramSocket == null) {
+                                    datagramSocket = new DatagramSocket(8888);
+                                    datagramSocket.setReuseAddress(true);
+                                }
+                                if (socket == null) socket = new Socket("dyzhello.club", 7777);
                                 os = socket.getOutputStream();
                                 is = socket.getInputStream();
                                 String text = (String) textView.getText();
-                                os.write("A".getBytes());
+                                os.write("B".getBytes());
                                 os.flush();
 
                                 byte[] bytes = new byte[1024];
@@ -156,9 +187,10 @@ public class MainActivity extends AppCompatActivity
 
                                 int number = is.read(bytes);
 
-                                sb.append(new String(bytes));
+                                sb.append(new String(bytes, 0, number, "utf-8"));
 
                                 myIP = sb.toString();
+                                //datagramSocket.bind(new InetSocketAddress("localhost", 8888));
                                 System.out.append(sb.toString());
                             } catch (IOException e) {
                                 e.printStackTrace();
@@ -171,6 +203,8 @@ public class MainActivity extends AppCompatActivity
             connBtn.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
+
+                    sendAndRead();
 
                 }
             });
@@ -191,7 +225,8 @@ public class MainActivity extends AppCompatActivity
                                 int number = 0;
                                 number = is.read(bytes);
                                 System.out.println(new String(bytes));
-                                bIP = new String(bytes);
+                                bIP = new String(bytes, 0, number, "utf-8");
+                                datagramSocket.connect(new InetSocketAddress(bIP, 8888));
                                 textView.setText(bIP);
                             } catch (IOException e) {
                                 e.printStackTrace();
@@ -201,5 +236,150 @@ public class MainActivity extends AppCompatActivity
                 }
             });
         }
+        clientA.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        UDPClientA.AMAIN();
+                    }
+                }).start();
+            }
+        });
+        myP2PConnect.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        serverAddress = new InetSocketAddress("dyzhello.club", 7777);
+                        try {
+                            PeerMessage peerMessage = new PeerMessage();
+                            peerMessage.setType(PeerMessage.TYPE_REGISTER);
+                            peerMessage.setIntranetIP(InetAddress.getLocalHost().toString());
+                            peerMessage.setName("AAA");
+                            if (connectDataSocket == null) connectDataSocket = new DatagramSocket();
+                            String requestJson = JSON.toJSONString(peerMessage);
+                            DatagramPacket registerRequest = new DatagramPacket(requestJson.getBytes(), requestJson.length(), serverAddress);
+                            connectDataSocket.send(registerRequest);
+                            DatagramPacket response = new DatagramPacket(new byte[1024], 1024);
+                            while (true) {
+                                connectDataSocket.receive(response);
+                                //  解析报文
+                                PeerResponseMessage responseMessage = JSON.parseObject(new String(response.getData(), 0, response.getLength(), "utf-8")).toJavaObject(PeerResponseMessage.class);
+                                destinationInfo.setIntraNetIP(responseMessage.getDestinationIP());
+                                destinationInfo.setPort(responseMessage.getDestinationPort());
+                                destinationAddress = new InetSocketAddress(destinationInfo.getNatIP(), destinationInfo.getPort());
+                                if (responseMessage.getMsg().equals("destinationInfo")) {
+                                    new Thread(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            String linkComd = "link";
+                                            while (true) {
+                                                try {
+                                                    DatagramPacket linkPacket = new DatagramPacket(linkComd.getBytes(), linkComd.length(), destinationAddress);
+                                                    connectDataSocket.send(linkPacket);
+                                                    Thread.sleep(3000);
+                                                } catch (InterruptedException e) {
+                                                    e.printStackTrace();
+                                                } catch (IOException e) {
+                                                    e.printStackTrace();
+                                                }
+                                            }
+                                        }
+                                    }).start();
+                                }
+                                if (responseMessage.getMsg().equals("assistInfo")) {
+                                    String linkComd = "assist";
+                                    DatagramPacket linkPacket = new DatagramPacket(linkComd.getBytes(), linkComd.length(), destinationAddress);
+                                    connectDataSocket.send(linkPacket);
+                                    new Thread(new Runnable() {
+                                        DatagramPacket receivePacket = new DatagramPacket(new byte[1024], 1024);
+                                        @Override
+                                        public void run() {
+                                            while (true) {
+                                                try {
+                                                    connectDataSocket.receive(receivePacket);
+                                                    String responseStr = new String(receivePacket.getData(), 0, receivePacket.getLength(), "utf-8");
+                                                    System.out.println(responseStr);
+                                                } catch (IOException e) {
+                                                    e.printStackTrace();
+                                                }
+                                            }
+                                        }
+                                    }).start();
+                                }
+                            }
+                        } catch (UnknownHostException e) {
+                            e.printStackTrace();
+                        } catch (SocketException e) {
+                            e.printStackTrace();
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }).start();
+            }
+        });
+
+        desbtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        PeerMessage request = new PeerMessage();
+                        request.setType(PeerMessage.TYPE_ASSIST);
+                        request.setName("BBB");
+                        String requestJson = JSON.toJSONString(request);
+                        DatagramPacket requestPacket = new DatagramPacket(requestJson.getBytes(), requestJson.length(), serverAddress);
+                        try {
+                            connectDataSocket.send(requestPacket);
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }).start();
+            }
+        });
+    }
+    public void sendAndRead() {
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (!isRead)
+                try {
+                    String handshakeMsg = "PC_Message";
+
+                    DatagramPacket packet = new DatagramPacket(handshakeMsg.getBytes(), handshakeMsg.getBytes().length, new InetSocketAddress(bIP, 8888));
+                    datagramSocket.send(packet);
+                    Thread.sleep(5000);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }).start();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                byte[] bytes = new byte[1024];
+                while (true) {
+                    DatagramPacket packet = new DatagramPacket(bytes, 1024);
+                    try {
+                        datagramSocket.receive(packet);
+                        if (!isRead) isRead = true;
+                        textView.append(new String(packet.getData()));
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+
+            }
+        }).start();
+
     }
 }
